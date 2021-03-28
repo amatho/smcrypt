@@ -1,4 +1,4 @@
-use std::str::Chars;
+use std::{convert::TryInto, str::Chars};
 
 use crypto_box::{
     aead::{generic_array::GenericArray, Aead},
@@ -63,9 +63,8 @@ pub fn run() -> Result<(), &'static str> {
             encrypt(&plain_text)?;
         }
         "decrypt" => {
-            let nonce = args.next().ok_or_else(usage)?;
             let encrypted = args.next().ok_or_else(usage)?;
-            decrypt(&nonce, &encrypted)?;
+            decrypt(&encrypted)?;
         }
         a => {
             eprintln!("smcrypt: '{}' is not a valid command.", a);
@@ -123,22 +122,32 @@ fn encrypt(plain_text: &str) -> Result<(), &'static str> {
     let nonce = crypto_box::generate_nonce(&mut rng);
 
     let my_box = crypto_box::Box::new(&ctx.their_public, &ctx.my_secret);
-    let encrypted_base64 = base64::encode(my_box.encrypt(&nonce, plain_text.as_bytes()).unwrap());
+    let encrypted_text = my_box.encrypt(&nonce, plain_text.as_bytes()).unwrap();
 
-    println!("Nonce: {}", base64::encode(nonce));
-    println!("Encrypted message: {}", encrypted_base64);
+    let encrypted_with_nonce: Vec<_> = nonce
+        .into_iter()
+        .chain(encrypted_text.into_iter())
+        .collect();
+
+    println!(
+        "Encrypted message: {}",
+        base64::encode(encrypted_with_nonce)
+    );
 
     Ok(())
 }
 
-fn decrypt(nonce_base64: &str, encrypted_base64: &str) -> Result<(), &'static str> {
+fn decrypt(encrypted_base64: &str) -> Result<(), &'static str> {
+    const NONCE_LEN: usize = 24;
+
     let ctx = read_keys()?;
-    let nonce = array_from_base64::<24>(nonce_base64);
-    let encrypted_text = base64::decode(encrypted_base64).unwrap();
+    let encrypted_with_nonce = base64::decode(encrypted_base64).unwrap();
+    let nonce: [u8; 24] = encrypted_with_nonce[..NONCE_LEN].try_into().unwrap();
+    let encrypted_text = &encrypted_with_nonce[NONCE_LEN..];
 
     let my_box = crypto_box::Box::new(&ctx.their_public, &ctx.my_secret);
     let plain_text = my_box
-        .decrypt(&GenericArray::from(nonce), &encrypted_text[..])
+        .decrypt(&GenericArray::from(nonce), encrypted_text)
         .unwrap();
 
     println!("{}", String::from_utf8_lossy(&plain_text));
